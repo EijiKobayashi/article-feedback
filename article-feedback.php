@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Article Feedback
  * Description: 任意ページに設置できるクリック式フィードバック機能
- * Version: 1.0.3
+ * Version: 1.0.4
  *
  * <?php echo do_shortcode('[article_feedback]'); ?>
  */
@@ -48,11 +48,14 @@ class Article_Feedback_Plugin {
       choice VARCHAR(100) NOT NULL,
       ip_hash VARCHAR(64) NULL,
       user_agent TEXT NULL,
+      device_type VARCHAR(20) NULL,
+      referer TEXT NULL,
       created_at DATETIME NOT NULL,
       PRIMARY KEY (id),
       KEY post_id (post_id),
       KEY choice (choice),
       KEY ip_hash (ip_hash),
+      KEY device_type (device_type),
       KEY created_at (created_at)
     ) {$charset_collate};";
 
@@ -69,6 +72,20 @@ class Article_Feedback_Plugin {
     $saved = get_option('article_feedback_labels', []);
 
     return wp_parse_args($saved, $defaults);
+  }
+
+  private function detect_device_type($user_agent) {
+    $ua = strtolower((string) $user_agent);
+
+    if (preg_match('/iphone|ipod|android.*mobile|windows phone|blackberry|mobile/', $ua)) {
+      return 'mobile';
+    }
+
+    if (preg_match('/ipad|android|tablet|kindle|silk/', $ua)) {
+      return 'tablet';
+    }
+
+    return 'pc';
   }
 
   public function render_shortcode() {
@@ -133,7 +150,9 @@ class Article_Feedback_Plugin {
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
     $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
 
-    $ip_hash = $ip ? hash('sha256', $ip . wp_salt()) : '';
+    $ip_hash     = $ip ? hash('sha256', $ip . wp_salt()) : '';
+    $device_type = $this->detect_device_type($ua);
+    $referer     = isset($_SERVER['HTTP_REFERER']) ? esc_url_raw($_SERVER['HTTP_REFERER']) : '';
 
     /**
      * サーバー側：10秒以内の連続送信だけ制限
@@ -158,15 +177,19 @@ class Article_Feedback_Plugin {
     $inserted = $wpdb->insert(
       $this->table,
       [
-        'post_id'    => $post_id ?: null,
-        'page_url'   => $url,
-        'choice'     => $choice,
-        'ip_hash'    => $ip_hash,
-        'user_agent' => sanitize_textarea_field($ua),
-        'created_at' => current_time('mysql'),
+        'post_id'     => $post_id ?: null,
+        'page_url'    => $url,
+        'choice'      => $choice,
+        'ip_hash'     => $ip_hash,
+        'user_agent'  => sanitize_textarea_field($ua),
+        'device_type' => $device_type,
+        'referer'     => $referer,
+        'created_at'  => current_time('mysql'),
       ],
       [
         '%d',
+        '%s',
+        '%s',
         '%s',
         '%s',
         '%s',
@@ -246,10 +269,42 @@ class Article_Feedback_Plugin {
       }
     }
 
+    $device_counts_raw = $wpdb->get_results(
+      "SELECT device_type, COUNT(*) AS count
+       FROM {$this->table}
+       GROUP BY device_type"
+    );
+
+    $device_counts = [
+      'pc'     => 0,
+      'mobile' => 0,
+      'tablet' => 0,
+    ];
+
+    foreach ($device_counts_raw as $row) {
+      $device = $row->device_type ?: 'unknown';
+
+      if (!isset($device_counts[$device])) {
+        $device_counts[$device] = 0;
+      }
+
+      $device_counts[$device] = (int) $row->count;
+    }
+
     $page_ranking = $wpdb->get_results(
       "SELECT page_url, COUNT(*) AS count
        FROM {$this->table}
        GROUP BY page_url
+       ORDER BY count DESC
+       LIMIT 10"
+    );
+
+    $referer_ranking = $wpdb->get_results(
+      "SELECT referer, COUNT(*) AS count
+       FROM {$this->table}
+       WHERE referer IS NOT NULL
+       AND referer != ''
+       GROUP BY referer
        ORDER BY count DESC
        LIMIT 10"
     );
@@ -311,7 +366,7 @@ class Article_Feedback_Plugin {
             </form>
           </div>
 
-          <div class="af-panel">
+          <div class="af-panel af-mb">
             <h2 class="af-panel-title">選択肢別 集計</h2>
 
             <?php foreach ($choice_counts as $choice => $count): ?>
@@ -320,6 +375,26 @@ class Article_Feedback_Plugin {
               <div class="af-progress-item">
                 <div class="af-progress-head">
                   <strong><?php echo esc_html($labels[$choice] ?? $choice); ?></strong>
+                  <span class="af-muted">
+                    <?php echo esc_html(number_format($count)); ?>件 / <?php echo esc_html($percent); ?>%
+                  </span>
+                </div>
+                <div class="af-progress">
+                  <div class="af-progress-bar" style="width: <?php echo esc_attr($percent); ?>%;"></div>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          </div>
+
+          <div class="af-panel">
+            <h2 class="af-panel-title">デバイス別 集計</h2>
+
+            <?php foreach ($device_counts as $device => $count): ?>
+              <?php $percent = $total > 0 ? round(($count / $total) * 100, 1) : 0; ?>
+
+              <div class="af-progress-item">
+                <div class="af-progress-head">
+                  <strong><?php echo esc_html($device); ?></strong>
                   <span class="af-muted">
                     <?php echo esc_html(number_format($count)); ?>件 / <?php echo esc_html($percent); ?>%
                   </span>
@@ -366,6 +441,39 @@ class Article_Feedback_Plugin {
             </div>
           </div>
 
+          <div class="af-panel af-mb">
+            <h2 class="af-panel-title">リファラ別ランキング</h2>
+
+            <div class="af-table-wrap">
+              <table class="af-table">
+                <thead>
+                  <tr>
+                    <th>リファラ</th>
+                    <th>件数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php if ($referer_ranking): ?>
+                    <?php foreach ($referer_ranking as $referer): ?>
+                      <tr>
+                        <td class="af-url">
+                          <a href="<?php echo esc_url($referer->referer); ?>" target="_blank" rel="noopener">
+                            <?php echo esc_html($referer->referer); ?>
+                          </a>
+                        </td>
+                        <td><?php echo esc_html(number_format((int) $referer->count)); ?></td>
+                      </tr>
+                    <?php endforeach; ?>
+                  <?php else: ?>
+                    <tr>
+                      <td colspan="2">データがありません。</td>
+                    </tr>
+                  <?php endif; ?>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <div class="af-panel">
             <h2 class="af-panel-title">最新ログ</h2>
 
@@ -376,6 +484,8 @@ class Article_Feedback_Plugin {
                     <th>日時</th>
                     <th>URL</th>
                     <th>選択</th>
+                    <th>デバイス</th>
+                    <th>リファラ</th>
                     <th>Post ID</th>
                   </tr>
                 </thead>
@@ -394,12 +504,22 @@ class Article_Feedback_Plugin {
                             <?php echo esc_html($labels[$row->choice] ?? $row->choice); ?>
                           </span>
                         </td>
+                        <td><?php echo esc_html($row->device_type ?: '-'); ?></td>
+                        <td class="af-url">
+                          <?php if (!empty($row->referer)): ?>
+                            <a href="<?php echo esc_url($row->referer); ?>" target="_blank" rel="noopener">
+                              <?php echo esc_html($row->referer); ?>
+                            </a>
+                          <?php else: ?>
+                            <span class="af-muted">-</span>
+                          <?php endif; ?>
+                        </td>
                         <td><?php echo esc_html($row->post_id); ?></td>
                       </tr>
                     <?php endforeach; ?>
                   <?php else: ?>
                     <tr>
-                      <td colspan="4">データがありません。</td>
+                      <td colspan="6">データがありません。</td>
                     </tr>
                   <?php endif; ?>
                 </tbody>
