@@ -2,8 +2,8 @@
 
 /**
  * Plugin Name: Article Feedback
- * Description: 記事・固定ページ・任意テンプレート用のクリック式フィードバック機能
- * Version: 1.0.0
+ * Description: 任意ページに設置できるクリック式フィードバック
+ * Version: 1.0.1
  */
 
 if (!defined('ABSPATH')) {
@@ -11,203 +11,192 @@ if (!defined('ABSPATH')) {
 }
 
 class Article_Feedback_Plugin {
-  private string $table_name;
+  private string $table;
 
   public function __construct() {
     global $wpdb;
-    $this->table_name = $wpdb->prefix . 'article_feedback';
+    $this->table = $wpdb->prefix . 'article_feedback';
 
     register_activation_hook(__FILE__, [$this, 'activate']);
 
-    add_shortcode('article_feedback', [$this, 'render_shortcode']);
+    add_shortcode('article_feedback', [$this, 'render']);
 
-    add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend_assets']);
+    add_action('wp_enqueue_scripts', [$this, 'enqueue']);
+    add_action('wp_ajax_article_feedback_submit', [$this, 'submit']);
+    add_action('wp_ajax_nopriv_article_feedback_submit', [$this, 'submit']);
 
-    add_action('wp_ajax_article_feedback_submit', [$this, 'handle_submit']);
-    add_action('wp_ajax_nopriv_article_feedback_submit', [$this, 'handle_submit']);
-
-    add_action('admin_menu', [$this, 'add_admin_menu']);
-    add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
+    add_action('admin_menu', [$this, 'menu']);
+    add_action('admin_init', [$this, 'save_settings']);
   }
 
+  /**
+   * テーブル作成
+   */
   public function activate(): void {
     global $wpdb;
-
     require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-    $charset_collate = $wpdb->get_charset_collate();
-
-    $sql = "CREATE TABLE {$this->table_name} (
-      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    $sql = "CREATE TABLE {$this->table} (
+      id BIGINT UNSIGNED AUTO_INCREMENT,
       post_id BIGINT UNSIGNED NULL,
       page_url TEXT NOT NULL,
-      choice VARCHAR(100) NOT NULL,
-      ip_hash VARCHAR(64) NULL,
-      user_agent TEXT NULL,
+      choice VARCHAR(50) NOT NULL,
+      ip_hash VARCHAR(64),
+      user_agent TEXT,
       created_at DATETIME NOT NULL,
-      PRIMARY KEY  (id),
+      PRIMARY KEY (id),
       KEY post_id (post_id),
-      KEY choice (choice),
-      KEY created_at (created_at)
-    ) {$charset_collate};";
+      KEY choice (choice)
+    ) {$wpdb->get_charset_collate()};";
 
     dbDelta($sql);
   }
 
-  public function render_shortcode(): string {
-    return '<div class="js-article-feedback"></div>';
+  /**
+   * フロント出力
+   */
+  public function render(): string {
+    ob_start();
+
+    $theme = locate_template('article-feedback/feedback.php');
+    $plugin = plugin_dir_path(__FILE__) . 'templates/feedback.php';
+
+    if ($theme) {
+      include $theme;
+    } else {
+      include $plugin;
+    }
+
+    return ob_get_clean();
   }
 
-  public function enqueue_frontend_assets(): void {
+  /**
+   * JS読み込み
+   */
+  public function enqueue(): void {
     wp_enqueue_script(
       'article-feedback',
       plugin_dir_url(__FILE__) . 'assets/feedback.js',
       [],
-      '1.0.0',
+      '1.0',
       true
     );
 
-    wp_localize_script('article-feedback', 'ArticleFeedback', [
-      'ajaxUrl' => admin_url('admin-ajax.php'),
-      'nonce'   => wp_create_nonce('article_feedback_nonce'),
-      'postId'  => get_queried_object_id(),
+    wp_localize_script('article-feedback', 'AF_DATA', [
+      'ajax' => admin_url('admin-ajax.php'),
+      'nonce' => wp_create_nonce('af_nonce'),
+      'post_id' => get_queried_object_id(),
     ]);
   }
 
-  public function handle_submit(): void {
-    check_ajax_referer('article_feedback_nonce', 'nonce');
+  /**
+   * 送信処理
+   */
+  public function submit(): void {
+    check_ajax_referer('af_nonce', 'nonce');
 
     global $wpdb;
 
-    $post_id  = isset($_POST['post_id']) ? absint($_POST['post_id']) : 0;
-    $choice   = isset($_POST['choice']) ? sanitize_key($_POST['choice']) : '';
-    $page_url = isset($_POST['page_url']) ? esc_url_raw($_POST['page_url']) : '';
+    $choice = sanitize_key($_POST['choice'] ?? '');
+    $post_id = absint($_POST['post_id'] ?? 0);
+    $url = esc_url_raw($_POST['url'] ?? '');
 
-    $allowed_choices = [
-      'helpful',
-      'not_helpful',
-      'not_found',
-    ];
-
-    if (!$choice || !in_array($choice, $allowed_choices, true)) {
-      wp_send_json_error(['message' => 'Invalid choice.'], 400);
+    if (!$choice) {
+      wp_send_json_error();
     }
 
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
     $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
 
-    $ip_hash = $ip ? hash('sha256', $ip . wp_salt()) : '';
-
-    $inserted = $wpdb->insert(
-      $this->table_name,
+    $wpdb->insert(
+      $this->table,
       [
-        'post_id'    => $post_id ?: null,
-        'page_url'   => $page_url,
-        'choice'     => $choice,
-        'ip_hash'    => $ip_hash,
-        'user_agent' => sanitize_textarea_field($ua),
+        'post_id' => $post_id ?: null,
+        'page_url' => $url,
+        'choice' => $choice,
+        'ip_hash' => $ip ? hash('sha256', $ip . wp_salt()) : '',
+        'user_agent' => sanitize_text_field($ua),
         'created_at' => current_time('mysql'),
-      ],
-      [
-        '%d',
-        '%s',
-        '%s',
-        '%s',
-        '%s',
-        '%s',
       ]
     );
 
-    if (!$inserted) {
-      wp_send_json_error(['message' => 'Failed to save feedback.'], 500);
-    }
-
-    wp_send_json_success(['message' => 'Thanks.']);
+    wp_send_json_success();
   }
 
-  public function add_admin_menu(): void {
-    add_menu_page(
-      '記事フィードバック',
-      '記事フィードバック',
-      'manage_options',
-      'article-feedback',
-      [$this, 'render_admin_page'],
-      'dashicons-chart-bar',
-      58
-    );
-  }
-
-  public function enqueue_admin_assets(string $hook): void {
-    if ($hook !== 'toplevel_page_article-feedback') {
-      return;
-    }
-
-    wp_enqueue_style(
-      'article-feedback-admin',
-      plugin_dir_url(__FILE__) . 'assets/admin.css',
-      [],
-      '1.0.0'
-    );
-  }
-
-  public function render_admin_page(): void {
-    if (!current_user_can('manage_options')) {
-      return;
-    }
-
-    global $wpdb;
-
-    $rows = $wpdb->get_results(
-      "SELECT * FROM {$this->table_name} ORDER BY created_at DESC LIMIT 200"
-    );
-
-    $labels = [
-      'helpful'     => '役に立った',
+  /**
+   * ラベル取得
+   */
+  public static function get_labels(): array {
+    $default = [
+      'helpful' => '役に立った',
       'not_helpful' => '役に立たなかった',
-      'not_found'   => '探している内容ではない',
+      'not_found' => '探している内容ではない',
     ];
+
+    return wp_parse_args(get_option('af_labels', []), $default);
+  }
+
+  /**
+   * 設定保存
+   */
+  public function save_settings(): void {
+    if (!isset($_POST['af_nonce_setting'])) return;
+    if (!wp_verify_nonce($_POST['af_nonce_setting'], 'af_setting')) return;
+
+    update_option('af_labels', [
+      'helpful' => sanitize_text_field($_POST['helpful'] ?? ''),
+      'not_helpful' => sanitize_text_field($_POST['not_helpful'] ?? ''),
+      'not_found' => sanitize_text_field($_POST['not_found'] ?? ''),
+    ]);
+  }
+
+  /**
+   * 管理画面
+   */
+  public function menu(): void {
+    add_menu_page(
+      'Feedback',
+      'Feedback',
+      'manage_options',
+      'af',
+      [$this, 'admin']
+    );
+  }
+
+  public function admin(): void {
+    global $wpdb;
+    $rows = $wpdb->get_results("SELECT * FROM {$this->table} ORDER BY created_at DESC LIMIT 100");
+    $labels = self::get_labels();
 ?>
     <div class="wrap">
-      <div class="af-container">
-        <h1 class="af-title">記事フィードバック</h1>
+      <h1>フィードバック</h1>
 
-        <table class="af-table">
-          <thead>
-            <tr>
-              <th>日時</th>
-              <th>ページ</th>
-              <th>選択</th>
-              <th>投稿ID</th>
-              <th>User Agent</th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php if ($rows): ?>
-              <?php foreach ($rows as $row): ?>
-                <tr>
-                  <td><?php echo esc_html($row->created_at); ?></td>
-                  <td>
-                    <a href="<?php echo esc_url($row->page_url); ?>" target="_blank" rel="noopener">
-                      <?php echo esc_html($row->page_url); ?>
-                    </a>
-                  </td>
-                  <td>
-                    <span class="af-badge">
-                      <?php echo esc_html($labels[$row->choice] ?? $row->choice); ?>
-                    </span>
-                  </td>
-                  <td><?php echo esc_html($row->post_id); ?></td>
-                  <td class="af-ua"><?php echo esc_html($row->user_agent); ?></td>
-                </tr>
-              <?php endforeach; ?>
-            <?php else: ?>
-              <tr>
-                <td colspan="5">まだデータがありません。</td>
-              </tr>
-            <?php endif; ?>
-          </tbody>
-        </table>
-      </div>
+      <form method="post">
+        <?php wp_nonce_field('af_setting', 'af_nonce_setting'); ?>
+
+        <h2>ラベル設定</h2>
+        <input name="helpful" value="<?php echo esc_attr($labels['helpful']); ?>"><br>
+        <input name="not_helpful" value="<?php echo esc_attr($labels['not_helpful']); ?>"><br>
+        <input name="not_found" value="<?php echo esc_attr($labels['not_found']); ?>"><br>
+        <?php submit_button(); ?>
+      </form>
+
+      <h2>ログ</h2>
+      <table class="widefat">
+        <tr>
+          <th>日時</th>
+          <th>URL</th>
+          <th>選択</th>
+        </tr>
+
+        <?php foreach ($rows as $r): ?>
+          <tr>
+            <td><?php echo esc_html($r->created_at); ?></td>
+            <td><?php echo esc_html($r->page_url); ?></td>
+            <td><?php echo esc_html($r->choice); ?></td>
+          </tr>
+        <?php endforeach; ?>
+      </table>
     </div>
 <?php
   }
