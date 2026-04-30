@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Article Feedback
  * Description: 任意ページに設置できるクリック式フィードバック機能
- * Version: 1.0.4
+ * Version: 1.0.5
  *
  * <?php echo do_shortcode('[article_feedback]'); ?>
  */
@@ -202,7 +202,48 @@ class Article_Feedback_Plugin {
       wp_send_json_error(['message' => 'insert_failed'], 500);
     }
 
+    $labels = self::get_labels();
+
+    $this->send_notification_email([
+      'post_id'      => $post_id ?: null,
+      'page_url'     => $url,
+      'choice'       => $choice,
+      'choice_label' => $labels[$choice] ?? $choice,
+      'ip_hash'      => $ip_hash,
+      'user_agent'   => $ua,
+      'device_type'  => $device_type,
+      'referer'      => $referer,
+      'created_at'   => current_time('mysql'),
+    ]);
+
     wp_send_json_success();
+  }
+
+  private function send_notification_email($data) {
+    $enabled = get_option('article_feedback_notify_enabled', '0');
+    $to      = get_option('article_feedback_notify_email', '');
+
+    if ($enabled !== '1') {
+      return;
+    }
+
+    if (!$to || !is_email($to)) {
+      return;
+    }
+
+    $subject = '【Article Feedback】新しいフィードバックが送信されました';
+
+    $body  = "新しいフィードバックが送信されました。\n\n";
+    $body .= "日時: {$data['created_at']}\n";
+    $body .= "選択: {$data['choice_label']} ({$data['choice']})\n";
+    $body .= "Post ID: {$data['post_id']}\n";
+    $body .= "ページURL: {$data['page_url']}\n";
+    $body .= "デバイス: {$data['device_type']}\n";
+    $body .= "リファラ: {$data['referer']}\n";
+    $body .= "IP Hash: {$data['ip_hash']}\n";
+    $body .= "User Agent: {$data['user_agent']}\n";
+
+    wp_mail($to, $subject, $body);
   }
 
   public function add_admin_menu() {
@@ -236,6 +277,12 @@ class Article_Feedback_Plugin {
       'not_found'   => sanitize_text_field($_POST['label_not_found'] ?? ''),
     ]);
 
+    $notify_enabled = isset($_POST['notify_enabled']) ? '1' : '0';
+    $notify_email   = sanitize_email($_POST['notify_email'] ?? '');
+
+    update_option('article_feedback_notify_enabled', $notify_enabled);
+    update_option('article_feedback_notify_email', $notify_email);
+
     wp_safe_redirect(admin_url('admin.php?page=article-feedback&updated=1'));
     exit;
   }
@@ -248,6 +295,9 @@ class Article_Feedback_Plugin {
     global $wpdb;
 
     $labels = self::get_labels();
+
+    $notify_enabled = get_option('article_feedback_notify_enabled', '0');
+    $notify_email   = get_option('article_feedback_notify_email', '');
 
     $total = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$this->table}");
 
@@ -342,10 +392,12 @@ class Article_Feedback_Plugin {
       <div class="af-layout">
         <div>
           <div class="af-panel af-mb">
-            <h2 class="af-panel-title">ラベル設定</h2>
+            <h2 class="af-panel-title">設定</h2>
 
             <form method="post">
               <?php wp_nonce_field('article_feedback_settings', 'article_feedback_settings_nonce'); ?>
+
+              <h3 class="af-subtitle">ラベル設定</h3>
 
               <div class="af-field">
                 <label for="label_helpful">1つ目のラベル</label>
@@ -360,6 +412,25 @@ class Article_Feedback_Plugin {
               <div class="af-field">
                 <label for="label_not_found">3つ目のラベル</label>
                 <input id="label_not_found" type="text" name="label_not_found" value="<?php echo esc_attr($labels['not_found']); ?>">
+              </div>
+
+              <h3 class="af-subtitle">メール通知設定</h3>
+
+              <div class="af-field">
+                <label class="af-checkbox-label">
+                  <input type="checkbox" name="notify_enabled" value="1" <?php checked($notify_enabled, '1'); ?>>
+                  メール通知を有効にする
+                </label>
+              </div>
+
+              <div class="af-field">
+                <label for="notify_email">通知先メールアドレス</label>
+                <input
+                  id="notify_email"
+                  type="email"
+                  name="notify_email"
+                  value="<?php echo esc_attr($notify_email); ?>"
+                  placeholder="example@example.com">
               </div>
 
               <?php submit_button('保存', 'primary', 'submit', false); ?>

@@ -74,6 +74,17 @@
   color: #111827;
 }
 
+.af-subtitle {
+  margin: 24px 0 12px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #374151;
+}
+
+.af-subtitle:first-child {
+  margin-top: 0;
+}
+
 .af-field {
   margin-bottom: 16px;
 }
@@ -85,12 +96,23 @@
   color: #374151;
 }
 
-.af-field input {
+.af-field input[type='text'],
+.af-field input[type='email'] {
   width: 100%;
   max-width: 100%;
   border: 1px solid #d1d5db;
   border-radius: 10px;
   padding: 8px 12px;
+}
+
+.af-checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.af-checkbox-label input {
+  margin: 0;
 }
 
 .af-table-wrap {
