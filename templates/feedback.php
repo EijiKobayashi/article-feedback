@@ -3,7 +3,7 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-$labels = article_feedback_get_labels();
+$labels = Article_Feedback_Plugin::get_labels();
 ?>
 
 <div class="article-feedback js-article-feedback">
@@ -25,7 +25,7 @@ $labels = article_feedback_get_labels();
     </button>
   </div>
 
-  <p class="article-feedback__thanks" hidden>
+  <p class="article-feedback__thanks js-af-thanks" style="display:none;">
     フィードバックありがとうございます。
   </p>
 </div>
