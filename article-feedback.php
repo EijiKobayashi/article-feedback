@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Article Feedback
  * Description: 任意ページに設置できるクリック式フィードバック機能
- * Version: 1.0.6
+ * Version: 1.0.7
  *
  * <?php echo do_shortcode('[article_feedback]'); ?>
  */
@@ -32,6 +32,8 @@ class Article_Feedback_Plugin {
     add_action('admin_menu', [$this, 'add_admin_menu']);
     add_action('admin_init', [$this, 'save_settings']);
     add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
+
+    add_action('admin_post_article_feedback_delete_log', [$this, 'delete_log']);
   }
 
   public function activate() {
@@ -618,6 +620,7 @@ class Article_Feedback_Plugin {
   <?php
   }
 
+  // ログ一覧ページ
   public function render_logs_page() {
     if (!current_user_can('manage_options')) {
       return;
@@ -628,7 +631,7 @@ class Article_Feedback_Plugin {
     $labels = self::get_labels();
 
     $per_page = 50;
-    $paged    = max(1, absint($_GET['paged'] ?? 1));
+    $paged    = max(1, absint(wp_unslash($_GET['paged'] ?? 1)));
     $offset   = ($paged - 1) * $per_page;
 
     $total = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$this->table}");
@@ -656,6 +659,10 @@ class Article_Feedback_Plugin {
         </p>
       </div>
 
+      <?php if (isset($_GET['deleted'])): ?>
+        <div class="af-notice">ログを削除しました。</div>
+      <?php endif; ?>
+
       <div class="af-panel">
         <div class="af-table-wrap">
           <table class="af-table">
@@ -670,6 +677,7 @@ class Article_Feedback_Plugin {
                 <th>Post ID</th>
                 <th>IP Hash</th>
                 <th>User Agent</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -701,11 +709,22 @@ class Article_Feedback_Plugin {
                     <td><?php echo esc_html($row->post_id ?: '-'); ?></td>
                     <td class="af-url"><?php echo esc_html($row->ip_hash ?: '-'); ?></td>
                     <td class="af-url"><?php echo esc_html($row->user_agent ?: '-'); ?></td>
+                    <td>
+                      <a
+                        href="<?php echo esc_url(wp_nonce_url(
+                                admin_url('admin-post.php?action=article_feedback_delete_log&id=' . absint($row->id)),
+                                'article_feedback_delete_log_' . absint($row->id)
+                              )); ?>"
+                        class="button button-small"
+                        onclick="return confirm('このログを削除しますか？');">
+                        削除
+                      </a>
+                    </td>
                   </tr>
                 <?php endforeach; ?>
               <?php else: ?>
                 <tr>
-                  <td colspan="9">データがありません。</td>
+                  <td colspan="10">データがありません。</td>
                 </tr>
               <?php endif; ?>
             </tbody>
@@ -731,6 +750,32 @@ class Article_Feedback_Plugin {
       </div>
     </div>
 <?php
+  }
+
+  // ログ削除
+  public function delete_log() {
+    if (!current_user_can('manage_options')) {
+      wp_die('権限がありません。');
+    }
+
+    $id = absint($_GET['id'] ?? 0);
+
+    if (!$id) {
+      wp_die('不正なIDです。');
+    }
+
+    check_admin_referer('article_feedback_delete_log_' . $id);
+
+    global $wpdb;
+
+    $wpdb->delete(
+      $this->table,
+      ['id' => $id],
+      ['%d']
+    );
+
+    wp_safe_redirect(admin_url('admin.php?page=article-feedback-logs&deleted=1'));
+    exit;
   }
 }
 
