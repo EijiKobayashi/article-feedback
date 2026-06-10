@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Article Feedback
  * Description: 任意ページに設置できるクリック式フィードバック機能
- * Version: 1.0.5
+ * Version: 1.0.6
  *
  * <?php echo do_shortcode('[article_feedback]'); ?>
  */
@@ -120,7 +120,7 @@ class Article_Feedback_Plugin {
   }
 
   public function enqueue_admin_assets($hook) {
-    if ($hook !== 'toplevel_page_article-feedback') {
+    if (strpos($hook, 'article-feedback') === false) {
       return;
     }
 
@@ -255,6 +255,15 @@ class Article_Feedback_Plugin {
       [$this, 'render_admin_page'],
       'dashicons-chart-bar',
       58
+    );
+
+    add_submenu_page(
+      'article-feedback',
+      'ログ一覧',
+      'ログ一覧',
+      'manage_options',
+      'article-feedback-logs',
+      [$this, 'render_logs_page']
     );
   }
 
@@ -596,8 +605,129 @@ class Article_Feedback_Plugin {
                 </tbody>
               </table>
             </div>
+
+            <p class="af-actions">
+              <a href="<?php echo esc_url(admin_url('admin.php?page=article-feedback-logs')); ?>" class="button button-primary">
+                ログ一覧を見る
+              </a>
+            </p>
           </div>
         </div>
+      </div>
+    </div>
+  <?php
+  }
+
+  public function render_logs_page() {
+    if (!current_user_can('manage_options')) {
+      return;
+    }
+
+    global $wpdb;
+
+    $labels = self::get_labels();
+
+    $per_page = 50;
+    $paged    = max(1, absint($_GET['paged'] ?? 1));
+    $offset   = ($paged - 1) * $per_page;
+
+    $total = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$this->table}");
+
+    $rows = $wpdb->get_results(
+      $wpdb->prepare(
+        "SELECT *
+       FROM {$this->table}
+       ORDER BY created_at DESC
+       LIMIT %d OFFSET %d",
+        $per_page,
+        $offset
+      )
+    );
+
+    $total_pages = max(1, (int) ceil($total / $per_page));
+  ?>
+    <div class="wrap af-wrap">
+      <div class="af-header">
+        <h1 class="af-title">ログ一覧</h1>
+        <p>
+          <a href="<?php echo esc_url(admin_url('admin.php?page=article-feedback')); ?>" class="button">
+            集計ページへ戻る
+          </a>
+        </p>
+      </div>
+
+      <div class="af-panel">
+        <div class="af-table-wrap">
+          <table class="af-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>日時</th>
+                <th>URL</th>
+                <th>選択</th>
+                <th>デバイス</th>
+                <th>リファラ</th>
+                <th>Post ID</th>
+                <th>IP Hash</th>
+                <th>User Agent</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php if ($rows): ?>
+                <?php foreach ($rows as $row): ?>
+                  <tr>
+                    <td><?php echo esc_html($row->id); ?></td>
+                    <td><?php echo esc_html($row->created_at); ?></td>
+                    <td class="af-url">
+                      <a href="<?php echo esc_url($row->page_url); ?>" target="_blank" rel="noopener">
+                        <?php echo esc_html($row->page_url); ?>
+                      </a>
+                    </td>
+                    <td>
+                      <span class="af-badge">
+                        <?php echo esc_html($labels[$row->choice] ?? $row->choice); ?>
+                      </span>
+                    </td>
+                    <td><?php echo esc_html($row->device_type ?: '-'); ?></td>
+                    <td class="af-url">
+                      <?php if (!empty($row->referer)): ?>
+                        <a href="<?php echo esc_url($row->referer); ?>" target="_blank" rel="noopener">
+                          <?php echo esc_html($row->referer); ?>
+                        </a>
+                      <?php else: ?>
+                        <span class="af-muted">-</span>
+                      <?php endif; ?>
+                    </td>
+                    <td><?php echo esc_html($row->post_id ?: '-'); ?></td>
+                    <td class="af-url"><?php echo esc_html($row->ip_hash ?: '-'); ?></td>
+                    <td class="af-url"><?php echo esc_html($row->user_agent ?: '-'); ?></td>
+                  </tr>
+                <?php endforeach; ?>
+              <?php else: ?>
+                <tr>
+                  <td colspan="9">データがありません。</td>
+                </tr>
+              <?php endif; ?>
+            </tbody>
+          </table>
+        </div>
+
+        <?php if ($total_pages > 1): ?>
+          <div class="tablenav">
+            <div class="tablenav-pages">
+              <?php
+              echo paginate_links([
+                'base'      => add_query_arg('paged', '%#%', admin_url('admin.php?page=article-feedback-logs')),
+                'format'    => '',
+                'current'   => $paged,
+                'total'     => $total_pages,
+                'prev_text' => '‹',
+                'next_text' => '›',
+              ]);
+              ?>
+            </div>
+          </div>
+        <?php endif; ?>
       </div>
     </div>
 <?php
